@@ -44,6 +44,8 @@ main :: () {
         zones, zone_labels := profiler_get_zones(.INCLUSIVE_TIME,, temp);
 
         // ... Display the profiling information for the frame ...
+
+        reset_temporary_storage();
     }
 }
 
