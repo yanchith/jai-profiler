@@ -6,12 +6,18 @@
 // This metaprogram plugin works with the Default_Metaprogram by supplying the +Profiler argument.
 //
 // It can also be used from custom metaprograms by importing it in the .METAPROGRAM mode and calling
-// message manually in the message loop with null first argument.
+// message manually in the message loop. The first parameter is optional.
 //
+
+Profiler_Plugin :: struct {
+    #as using plugin: Metaprogram_Plugin;
+    verbose: bool;
+}
 
 get_plugin :: () -> *Metaprogram_Plugin {
     p := New(Metaprogram_Plugin);
 
+    p.init             = init;  // Only necessary if used from Default_Metaprogram to configure.
     p.before_intercept = null;  // Not needed.
     p.add_source       = null;  // Not needed.
     p.message          = message;
@@ -21,12 +27,34 @@ get_plugin :: () -> *Metaprogram_Plugin {
     return p;
 }
 
+init :: (p: *Metaprogram_Plugin, options: [] string) -> bool {
+    pp := cast(*Profiler_Plugin, p);
+
+    for options {
+        if it == {
+            case "-verbose";  pp.verbose = true;
+            case; {
+                log_error("Command line for plugin Profiler: Unknown argument '%'", it);
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 profiler_final_code_inserted := false;
 profiler_import: *Message_Import;
 profiler_collected_zone_labels: [..] string;
 
 // You can call message directly from your metaprogram and pass null for p.
 message :: (p: *Metaprogram_Plugin, message: *Message) {
+    verbose := false;
+    if p {
+        pp := cast(*Profiler_Plugin, p);
+        verbose = pp.verbose;
+    }
+
     if message.kind == {
         case .PHASE; {
             message_phase := cast(*Message_Phase, message);
@@ -54,7 +82,7 @@ message :: (p: *Metaprogram_Plugin, message: *Message) {
                         print(*sb, "}\n");
 
                         s := builder_to_string(*sb,, temp);
-                        add_build_string(s, message.workspace, profiler_import);
+                        add_build_string(s, profiler_import.workspace, profiler_import);
                     } else {
                         compiler_report("[Profiler] Could not find #import for the Profiler module.");
                     }
@@ -99,7 +127,7 @@ message :: (p: *Metaprogram_Plugin, message: *Message) {
                 // TODO(jt): @CompilerBug We currently instrument each instantiation of the
                 // polymorphic/autobaked procedure. This is sort of okay, but even if we wanted to
                 // instrument the original procedure, we can't, because the compiler does not send a
-                // message with its body.
+                // message with its body. Maybe we should add the generic parameters into label?
 
                 body := tc.expression;
 
@@ -110,7 +138,7 @@ message :: (p: *Metaprogram_Plugin, message: *Message) {
                 new_statements: [..] *Code_Node;
                 new_statements.allocator = temp;
 
-                do_modify := maybe_instrument_statements(*new_statements, body.block.statements);
+                do_modify := maybe_instrument_statements(*new_statements, body.block.statements, verbose);
                 if do_modify {
                     body.block.statements = new_statements;
                     compiler_modify_procedure(message.workspace, body);
@@ -120,7 +148,7 @@ message :: (p: *Metaprogram_Plugin, message: *Message) {
     }
 }
 
-maybe_instrument_statements :: (new_statements: *[..] *Code_Node, statements: [] *Code_Node) -> instrumented: bool {
+maybe_instrument_statements :: (new_statements: *[..] *Code_Node, statements: [] *Code_Node, verbose: bool) -> instrumented: bool {
     instrumented := false;
 
     for statement: statements {
@@ -170,7 +198,7 @@ maybe_instrument_statements :: (new_statements: *[..] *Code_Node, statements: []
                 block_new_statements: [..] *Code_Node;
                 block_new_statements.allocator = temp;
 
-                block_instrumented := maybe_instrument_statements(*block_new_statements, block.statements);
+                block_instrumented := maybe_instrument_statements(*block_new_statements, block.statements, verbose);
 
                 if block_instrumented {
                     block.statements = block_new_statements;
@@ -237,10 +265,12 @@ maybe_instrument_statements :: (new_statements: *[..] *Code_Node, statements: []
             continue;
         }
 
-        zone_index := profiler_collected_zone_labels.count + 1; // +1, because zone 0 is for the entire profiled frame.
+        zone_index := profiler_collected_zone_labels.count + 1; // +1, because zone 0 is the entire profiled frame.
         array_add(*profiler_collected_zone_labels, argument_literal._string);
 
-        log("[Profiler] Instrumenting zone %", argument_literal._string);
+        if verbose {
+            log("[Profiler] Instrumenting zone %", argument_literal._string);
+        }
         s := tprint("__ProfileZone(%);", zone_index);
 
         literal := New(Code_Literal,, temp);
